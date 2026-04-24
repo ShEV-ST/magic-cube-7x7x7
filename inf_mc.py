@@ -2,7 +2,7 @@ import numpy as np
 import hashlib
 import os
 import time
-from itertools import product
+# from itertools import product
 
 class InfiniteMagicCubeStreamer:
     def __init__(self, save_dir="found_magic_cubes"):
@@ -10,6 +10,17 @@ class InfiniteMagicCubeStreamer:
         self.magic_const = 1204
         self.save_dir = save_dir
         self.found_hashes = set()
+        self.invalid_hashes = set()
+        self.tried_hashes = set()
+        self.duplicate_candidate_count = 0
+        self.invalid_candidate_count = 0
+        self.found_in_session = 0
+        self.start_time = time.time()
+        self.last_report_time = self.start_time
+        self.report_interval = 60
+        self.invalid_history_path = os.path.join(self.save_dir, "invalid_hashes.txt")
+        self.invalid_save_batch = []
+        self.invalid_flush_interval = 1000
         
         # Создаем папку если нет
         os.makedirs(self.save_dir, exist_ok=True)
@@ -24,7 +35,8 @@ class InfiniteMagicCubeStreamer:
                 # Имя файла = хеш куба
                 self.found_hashes.add(filename.replace(".npy", ""))
                 count += 1
-        print(f"✅ Загружено {count} ранее найденных уникальных кубов.\n")
+        print(f"✅ Загружено {count} ранее найденных уникальных кубов.")
+        self._load_invalid_history()
 
     def generate_candidate(self):
         """
@@ -119,6 +131,37 @@ class InfiniteMagicCubeStreamer:
         """Вычисляет MD5 хеш массива для проверки уникальности"""
         return hashlib.md5(cube.tobytes()).hexdigest()
 
+    def _load_invalid_history(self):
+        """Загружает хеши невалидных кандидатов между запусками"""
+        if not os.path.exists(self.invalid_history_path):
+            print(f"✅ Нет истории невалидных кандидатов ({self.invalid_history_path}).\n")
+            return
+        count = 0
+        with open(self.invalid_history_path, "r", encoding="utf-8") as f:
+            for line in f:
+                h = line.strip()
+                if h:
+                    self.invalid_hashes.add(h)
+                    count += 1
+        print(f"✅ Загружено {count} ранее невалидных кандидатов.\n")
+
+    def _flush_invalid_history(self):
+        if not self.invalid_save_batch:
+            return
+        with open(self.invalid_history_path, "a", encoding="utf-8") as f:
+            for h in self.invalid_save_batch:
+                f.write(h + "\n")
+        self.invalid_save_batch.clear()
+
+    def _get_cpu_load_info(self):
+        try:
+            load1, load5, load15 = os.getloadavg()
+            cpu_count = os.cpu_count() or 1
+            load_pct = min(100.0, load1 / cpu_count * 100)
+            return load1, load5, load15, cpu_count, load_pct
+        except (AttributeError, OSError):
+            return None
+
     def save_cube(self, cube, file_hash):
         """Сохраняет куб в файл"""
         filename = f"{self.save_dir}/cube_{file_hash}.npy"
@@ -131,7 +174,6 @@ class InfiniteMagicCubeStreamer:
         print("🎯 Ищем совершенные магические кубы (Sum = 1204)...")
         print(" Нажмите Ctrl+C для остановки.\n")
         
-        found_in_session = 0
         attempts = 0
         
         try:
@@ -140,27 +182,57 @@ class InfiniteMagicCubeStreamer:
                 
                 # 1. Генерация
                 cube = self.generate_candidate()
+                candidate_hash = self.get_hash(cube)
+                if candidate_hash in self.tried_hashes or candidate_hash in self.invalid_hashes or candidate_hash in self.found_hashes:
+                    self.duplicate_candidate_count += 1
+                    continue
+                self.tried_hashes.add(candidate_hash)
                 
                 # 2. Валидация
                 if self.validate_cube(cube):
-                    h = self.get_hash(cube)
-                    
-                    # 3. Проверка уникальности
-                    if h not in self.found_hashes:
-                        self.found_hashes.add(h)
-                        self.save_cube(cube, h)
-                        found_in_session += 1
-                        print(f"✨ #{found_in_session} (Попытка {attempts}): Найдена новая структура!")
+                    if candidate_hash not in self.found_hashes:
+                        self.found_hashes.add(candidate_hash)
+                        self.save_cube(cube, candidate_hash)
+                        self.found_in_session += 1
+                        print(f"✨ #{self.found_in_session} (Попытка {attempts}): Найдена новая структура!")
                     else:
                         # Если валиден, но не уникален — логируем всегда для отладки
                         print(f"⚙️ Валидный куб, но дубликат (Попытка {attempts})")
+                else:
+                    self.invalid_candidate_count += 1
+                    if candidate_hash not in self.invalid_hashes:
+                        self.invalid_hashes.add(candidate_hash)
+                        self.invalid_save_batch.append(candidate_hash)
+                        if len(self.invalid_save_batch) >= self.invalid_flush_interval:
+                            self._flush_invalid_history()
                 
-                # Уменьшенная задержка для ускорения (было 0.05)
-                time.sleep(0.01) 
+                # Ускорение: минимальная пауза, только если загрузка сильно выше 100%
+                cpu_info = self._get_cpu_load_info()
+                if cpu_info is not None:
+                    load1, load5, load15, cpu_count, load_pct = cpu_info
+                    if load_pct > 120:
+                        time.sleep(0.001)
+                else:
+                    time.sleep(0.001)
+
+                # Ежеминутный отчёт о прогрессе
+                now = time.time()
+                if now - self.last_report_time >= self.report_interval:
+                    elapsed = now - self.start_time
+                    speed = attempts / elapsed if elapsed > 0 else 0
+                    cpu_line = ""
+                    if cpu_info is not None:
+                        cpu_line = f", load1={load1:.2f}, cpus={cpu_count}, load={load_pct:.0f}%"
+                    print(f"📊 Отчёт: проверено {attempts} кандидатов, найдено {self.found_in_session} уникальных, "
+                          f"неуспешных {self.invalid_candidate_count}, повторов {self.duplicate_candidate_count}, "
+                          f"скорость {speed:.1f}/сек{cpu_line}, время {int(elapsed)} сек")
+                    self._flush_invalid_history()
+                    self.last_report_time = now
                 
         except KeyboardInterrupt:
+            self._flush_invalid_history()
             print("\n\n🛑 Поток остановлен пользователем.")
-            print(f" Итого за сессию найдено: {found_in_session} уникальных кубов.")
+            print(f" Итого за сессию найдено: {self.found_in_session} уникальных кубов.")
 
 if __name__ == "__main__":
     # Фиксируем seed для воспроизводимости (или уберите для полной случайности)
