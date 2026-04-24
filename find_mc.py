@@ -41,7 +41,7 @@ class RandomPerfectCubeFinder:
         c = cube.copy()
         
         # 1. Случайная перестановка осей
-        axes_perm = random.permutation(3)
+        axes_perm = np.random.permutation(3)
         c = np.transpose(c, axes_perm)
         
         # 2. Случайное обращение осей

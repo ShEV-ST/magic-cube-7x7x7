@@ -1,4 +1,8 @@
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    print("Ошибка: numpy не установлен. Установите его командой: pip install numpy")
+    raise
 
 def brede_1833_authentic():
     """
@@ -124,10 +128,6 @@ def verify_perfect_cube(cube):
             errors.append(f"{name}: {len(bad)} линий ≠ {M}, примеры: {sums[bad[:3]]}")
     
     # 2. 4 пространственные диагонали
-    diags = [
-        np.diag(np.diag(cube)),  # (0,0,0)→(6,6,6)
-        np.diag(np.fliplr(cube).diagonal()),  # и т.д.
-    ]
     # Прямая реализация через индексы надёжнее:
     diag_sets = [
         [(i, i, i) for i in range(n)],
